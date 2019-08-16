@@ -275,6 +275,9 @@ class GpuSlabHash<KeyT, ValueT, SlabHashTypeT::ConcurrentMap> {
     }
   }
 
+  GpuSlabHashContext<KeyT, ValueT, SlabHashTypeT::ConcurrentMap>* getContextPtr() {
+    return &gpu_context_;
+  }
   // returns some debug information about the slab hash
   std::string to_string();
   double computeLoadFactor(int flag);
