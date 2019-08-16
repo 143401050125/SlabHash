@@ -193,6 +193,8 @@ class GpuSlabHash<KeyT, ValueT, SlabHashTypeT::ConcurrentMap> {
 
   // a raw pointer to the initial allocated memory for all buckets
   int8_t* d_table_;
+
+  bool extern_base_slabs_;
   size_t slab_unit_size_;  // size of each slab unit in bytes (might differ
                            // based on the type)
 
@@ -210,12 +212,24 @@ class GpuSlabHash<KeyT, ValueT, SlabHashTypeT::ConcurrentMap> {
               DynamicAllocatorT* dynamic_allocator,
               uint32_t device_idx,
               const time_t seed = 0,
-              const bool identity_hash = false)
-      : num_buckets_(num_buckets)
-      , d_table_(nullptr)
-      , slab_unit_size_(0)
-      , dynamic_allocator_(dynamic_allocator)
-      , device_idx_(device_idx) {
+              const bool identity_hash = false,
+              int8_t* d_table_extern = nullptr) {
+    initSlabHash(
+        num_buckets, dynamic_allocator, device_idx, seed, identity_hash, d_table_extern);
+  }
+  GpuSlabHash() {}
+  void initSlabHash(const uint32_t num_buckets,
+                    DynamicAllocatorT* dynamic_allocator,
+                    uint32_t device_idx,
+                    const time_t seed = 0,
+                    const bool identity_hash = false,
+                    int8_t* d_table_extern = nullptr) {
+    num_buckets_ = num_buckets;
+    d_table_ = nullptr;
+    slab_unit_size_ = 0;
+    dynamic_allocator_ = dynamic_allocator;
+    device_idx_ = device_idx;
+
     assert(dynamic_allocator && "No proper dynamic allocator attached to the slab hash.");
     assert(sizeof(typename ConcurrentMapT<KeyT, ValueT>::SlabTypeT) ==
                (WARP_WIDTH_ * sizeof(uint32_t)) &&
@@ -229,10 +243,15 @@ class GpuSlabHash<KeyT, ValueT, SlabHashTypeT::ConcurrentMap> {
     slab_unit_size_ =
         GpuSlabHashContext<KeyT, ValueT, SlabHashTypeT::ConcurrentMap>::getSlabUnitSize();
 
-    // allocating initial buckets:
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_table_, slab_unit_size_ * num_buckets_));
-
-    CHECK_CUDA_ERROR(cudaMemset(d_table_, 0xFF, slab_unit_size_ * num_buckets_));
+    if (d_table_extern) {
+      d_table_ = d_table_extern;
+      extern_base_slabs_ = true;
+    } else {
+      // allocating initial buckets:
+      CHECK_CUDA_ERROR(cudaMalloc((void**)&d_table_, slab_unit_size_ * num_buckets_));
+      CHECK_CUDA_ERROR(cudaMemset(d_table_, 0xFF, slab_unit_size_ * num_buckets_));
+      extern_base_slabs_ = false;
+    }
 
     // creating a random number generator:
     if (!identity_hash) {
@@ -249,10 +268,11 @@ class GpuSlabHash<KeyT, ValueT, SlabHashTypeT::ConcurrentMap> {
     gpu_context_.initParameters(
         num_buckets_, hf_.x, hf_.y, d_table_, dynamic_allocator_->getContextPtr());
   }
-
   ~GpuSlabHash() {
     CHECK_CUDA_ERROR(cudaSetDevice(device_idx_));
-    CHECK_CUDA_ERROR(cudaFree(d_table_));
+    if (!extern_base_slabs_) {
+      CHECK_CUDA_ERROR(cudaFree(d_table_));
+    }
   }
 
   // returns some debug information about the slab hash
